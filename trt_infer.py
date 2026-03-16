@@ -255,8 +255,10 @@ def main(args):
         "probability": all_probabilities,
         "label": (np.array(all_probabilities) >= args.probability).astype(int),
     }
-
-    results_file = Path(args.h5_folder) / f"results_{args.engine_name}_trt.csv"
+    if(args.results_file):
+        results_file = Path(args.results_file)
+    else:
+        results_file = Path(args.h5_folder) / f"results_{args.engine_name}_trt.csv"
     pd.DataFrame(results_dict).to_csv(results_file, index=False)
     print(f"Results saved to: {results_file}")
 
@@ -297,6 +299,10 @@ if __name__ == "__main__":
     parser.add_argument(
     "--probability", type=float, default=0.5,
     help="Detection probability threshold (default: 0.5)"
+    )
+    parser.add_argument(
+    "--results_file", type=str, default=None,
+    help="Optional path to save results CSV (default: <h5_folder>/results_<engine_name>_trt.csv)"
     )
 
     args = parser.parse_args()
