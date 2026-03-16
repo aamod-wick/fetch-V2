@@ -11,7 +11,8 @@ FETCH (Fast Extragalactic Transient Candidate Hunter) - ONNX Edition provides a 
 1. Quick start guide 
 2. usage tutorials on colab notebook 
 3. Sample support guide using raw code on colab notebooks
-4. Known issues      
+4. Known issues 
+5. Command usage      
     
 ## 1. Quick start guide 
 1.1. Clone the repo and cd into {fetch-V2} folder 
@@ -43,4 +44,33 @@ tensorrt-cu12-libs==10.0.1
 For FP32/FP16 : run file "buildengine-fp16.py" and For INT8 engine building run file :buildengine_common.py with documented arguments .
    
 For example for creating an engine of FP 32 run this command 
-    
+```bash
+python trt_infer.py --engine_name model_a --h5_folder /{path to fetch-V2 repo}/fetch-V2/tests/ --batch_size 4 --probability 0.5 --ft_dim 256 256 --dt_dim 256 256 --engine_suffix .engine
+```  
+
+This should give an output on the user terminal akin to this :- 
+```txt
+Input 'data_freq_time' with dynamic shape and dtype float32
+Input 'data_dm_time' with dynamic shape and dtype float32
+Output 'dense_3' with dynamic shape and dtype float32
+Running inference on batch of 1 files
+
+Inference complete — 1 candidates processed.
+  test.h5  |  dense_3: [3.9158168e-10 1.0000000e+00]
+Results saved to: /{path to fetch-V2 repo}/fetch-V2/tests/results_model_a_trt.csv
+1 candidates processed, 1 detections above threshold 0.5
+```
+Morever the results _model_atrt.csv would contain the detection probablity and candidate file name in a comma seaparted value format like this : -  
+![Alt text](images/Result-sample.png)
+
+## 2. usage tutorials on colab notebook
+  Refer this colab note book to udnerstand how to run and use this project. [Link to usage tutorial](https://colab.research.google.com/drive/1Q0gBkk3KRZR6GiFXuC7d27oTgDAAzHFG?usp=sharing)
+
+  Setup------------>Select "copy this notebook to drive"  
+            |
+            ------->Select "change runtime type"    
+            |
+            -------->Select a compliant gpu such as "T4 GPU"(free) or "A100 GPU"(paid)  
+            |
+            --------->Run the cells accordingly one by one to get the gist   
+## 3. Sample support guide using raw code on colab notebooks
