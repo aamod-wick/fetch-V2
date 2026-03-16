@@ -58,8 +58,11 @@ class EngineBuilder:
 
         self.config.add_optimization_profile(profile)
 
-    def create_engine_fp(self, engine_name,precision="fp32"):
-        engine_path = Path("engines") / Path(engine_name+f"-{precision}")
+    def create_engine_fp(self, input_name,precision="fp32"):
+        input_name = Path(input_name)
+        stem = input_name.stem if input_name.suffix == ".engine" else input_name.name
+        engine_name = f"{stem}-{precision}.engine"
+        engine_path = Path("engines") / engine_name
         engine_path.parent.mkdir(parents=True, exist_ok=True)
         if precision=="fp16" and not self.builder.platform_has_fast_fp16:
             print("WARNING: FP16 not natively supported on this platform.")
