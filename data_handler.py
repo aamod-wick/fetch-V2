@@ -88,46 +88,71 @@ def load_and_preprocess_h5_data(h5_file_path, ft_dim=(256, 256), dt_dim=(256, 25
     except Exception as e:
         logger.error(f"Failed to load/preprocess {h5_file_path}: {str(e)}")
         raise
-def sort_h5_files_by_dm(h5_files,result_dir="sorted_files"):
+def sort_h5_files_by_dm(h5_files, result_dir="sorted_files"):
     """
-    Sort H5 files based on DM value extracted from file name.Stores files in result_dir in folder result_dir/{DM_value}/. Creates directories if they don't exist. Returns sorted list of file paths.
-    Enable recursive call 
-    :param h5_files: List of H5 file paths / directory
-    :return: nothing 
+    Sort H5 files based on DM value extracted from file name.
+    Stores files in result_dir in folder result_dir/DM_{DM_value}/
+    Creates directories if they don't exist. Returns sorted list of file paths.
+    
+    :param h5_files: List of H5 file paths or directory path
+    :param result_dir: Directory to store sorted files
+    :return: List of sorted file paths
     """
     
     try:
         # If h5_files is a directory, get all H5 files in it
         if isinstance(h5_files, str) and os.path.isdir(h5_files):
+            print(f"Searching for H5 files in: {h5_files}")
             h5_files = glob.glob(os.path.join(h5_files, "**", "*.h5"), recursive=True)
+            print(f"Found {len(h5_files)} H5 files")
 
-        # Create result directory if it doesn't exist (absolute path)
+        # Create result directory if it doesn't exist
         os.makedirs(result_dir, exist_ok=True)
         sorted_files = []
+        
         for h5_file in h5_files:
-            dm_value = find_dm_of_file(h5_file)
-            dm_dir = os.path.join(result_dir, f"DM_{dm_value:.2f}")
-            os.makedirs(dm_dir, exist_ok=True)
-            dest_path = os.path.join(dm_dir, os.path.basename(h5_file))
-            os.rename(h5_file, dest_path)
-            sorted_files.append(dest_path)
+            try:
+                dm_value = find_dm_of_file(h5_file)
+                # Format DM directory name
+                dm_dir = os.path.join(result_dir, f"DM_{dm_value:.2f}")
+                os.makedirs(dm_dir, exist_ok=True)
+                dest_path = os.path.join(dm_dir, os.path.basename(h5_file))
+                
+                # Only move if source and destination are different
+                if os.path.abspath(h5_file) != os.path.abspath(dest_path):
+                    print(f"Moving: {os.path.basename(h5_file)} -> DM_{dm_value:.2f}/")
+                    os.rename(h5_file, dest_path)
+                sorted_files.append(dest_path)
+            except Exception as e:
+                logger.error(f"Failed to process {h5_file}: {str(e)}")
+                continue
 
+        print(f"Successfully sorted {len(sorted_files)} files into {result_dir}")
         return sorted_files
+        
     except Exception as e:
         logger.error(f"Failed to sort H5 files: {str(e)}")
         raise
 def find_dm_of_file(file_path):
     """
     Extract DM value from file name.
-
+    File format: MJD60859.1807433_T60.0000000_DM2000.00000_SNR10.00000.h5
+    
     :param file_path: Path to H5 file
     :return: Extracted DM value as float
     """
     try:
         filename = os.path.basename(file_path)
-        # Assuming filename format is like "data_dm_123.45.h5"
-        dm_str = filename.split("_dm_")[1].split(".h5")[0]
-        return float(dm_str)
+        # Extract DM value from pattern like DM2000.00000
+        # Find "DM" and then get the number that follows
+        import re
+        match = re.search(r'_DM([0-9.]+)_', filename)
+        if match:
+            return float(match.group(1))
+        else:
+            # Fallback to old method if pattern not found
+            dm_str = filename.split("_dm_")[1].split(".h5")[0]
+            return float(dm_str)
     except Exception as e:
         logger.error(f"Failed to extract DM from {file_path}: {str(e)}")
         raise
@@ -167,4 +192,4 @@ def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
   ##---------------------------unit testing code---------------------------------##
 #data_files = ["test.h5"]
 #ft_batch, dt_batch, valid_files = process_batch(data_files)
-sort_h5_files_by_dm("/home/aamod/spotlight-data","/home/aamod/sorted_spotlight_data_files")
+#sort_h5_files_by_dm("/home/aamod/spotlight-data","/home/aamod/sorted_spotlight_data_files")
