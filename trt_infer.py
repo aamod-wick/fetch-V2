@@ -1,3 +1,5 @@
+from time import time
+
 import tensorrt as trt
 import numpy as np
 from cuda import cudart
@@ -7,7 +9,7 @@ import glob
 import pandas as pd 
 import os
 from cuda_utilities import Common  # Import Common class
-from data_handler import load_and_preprocess_h5_data, process_batch #import data handling functions for H5 files
+from data_handler import load_and_preprocess_h5_data, process_batch,find_dm_of_file,sort_h5_files_by_dm #import data handling functions for H5 files
 
 class TensorRTInfer:
     """
@@ -215,7 +217,42 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
             }
 
     return all_results
-
+def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value: float, batch_size: int = 8, ft_dim: tuple = (256, 256), dt_dim: tuple = (256, 256), repetitions: int = 10, timing_result_path: str = "timing_results.csv"):
+    """Run inference multiple times to measure latency and save results to CSV
+    Get the timing results for each run take the average of the runs and save ot to CSV
+    Format of CSV is {dm_value, latency_sec}
+    
+    :param engine_path: Resolved Path to the .engine file
+    :param h5_folder:   Path to folder containing .h5 candidate files (are sorted into subfolders by DM value)
+    :param DM_value:    The DM value for the current batch
+    :param batch_size:  Number of files to process per batch
+    :param ft_dim:      Freq-time spatial dims expected by the model
+    :param dt_dim:      DM-time spatial dims expected by the model
+    :param repetitions: Number of times to repeat inference for timing
+    :param timing_result_path: Path to save timing results CSV
+    """
+    timing_results = []
+    for i in range(repetitions):
+        start_time = time.time()
+        results = run_inference_on_h5_folder(engine_path, h5_folder, batch_size, ft_dim, dt_dim)
+        end_time = time.time()
+        latency = end_time - start_time
+        timing_results.append(latency)
+        print(f"Run {i+1}/{repetitions}: Latency = {latency:.4f} seconds")
+    
+    # Calculate average and save single result to CSV
+    avg_latency = np.mean(timing_results)
+    
+    summary_df = pd.DataFrame([{
+        "DM_value": DM_value,
+        "avg_latency_sec": avg_latency,
+    }])
+    
+    summary_df.to_csv(timing_result_path, index=False)
+    print(f"\nTiming summary saved to: {timing_result_path}")
+    print(f"Average latency: {avg_latency:.4f}")
+    
+    return results
 
 def main(args):
     engine_path = resolve_engine_path(args.engine_name, suffix=args.engine_suffix)
@@ -226,8 +263,21 @@ def main(args):
     h5_folder = Path(args.h5_folder)
     if not h5_folder.is_dir():
         raise NotADirectoryError(f"H5 folder not found: {h5_folder}")
-
-    results = run_inference_on_h5_folder(
+    if(args.run_timing):
+        # Extract DM value from folder name (assumes format like "DM_123.45")
+        dm_value = find_dm_of_file(str(h5_folder))
+        run_timed_inference_on_h5_folder(
+            engine_path=engine_path,
+            h5_folder=h5_folder,
+            DM_value=dm_value,
+            batch_size=args.batch_size,
+            ft_dim=tuple(args.ft_dim),
+            dt_dim=tuple(args.dt_dim),
+            repetitions=args.timing_repetitions,
+            timing_result_path=args.timing_result_path
+        )
+    else:
+        results = run_inference_on_h5_folder(
         engine_path=engine_path,
         h5_folder=h5_folder,
         batch_size=args.batch_size,
@@ -303,6 +353,18 @@ if __name__ == "__main__":
     parser.add_argument(
     "--results_file", type=str, default=None,
     help="Optional path to save results CSV (default: <h5_folder>/results_<engine_name>_trt.csv)"
+    )
+    parser.add_argument(
+        "--timing_result_path", type=str, default="timing_results.csv",
+        help="Path to save timing results CSV (default: timing_results.csv)"
+    )
+    parser.add_argument(
+        "--timing_repetitions", type=int, default=10,
+        help="Number of repetitions for timing inference (default: 10)"
+    )
+    parser.add_argument(
+        "--run_timing", type =bool, default=False,
+        help="If set, runs timed inference and saves timing results to CSV"
     )
 
     args = parser.parse_args()

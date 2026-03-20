@@ -88,8 +88,49 @@ def load_and_preprocess_h5_data(h5_file_path, ft_dim=(256, 256), dt_dim=(256, 25
     except Exception as e:
         logger.error(f"Failed to load/preprocess {h5_file_path}: {str(e)}")
         raise
+def sort_h5_files_by_dm(h5_files,result_dir="sorted_files"):
+    """
+    Sort H5 files based on DM value extracted from file name.Stores files in result_dir in folder result_dir/{DM_value}/. Creates directories if they don't exist. Returns sorted list of file paths.
+    Enable recursive call 
+    :param h5_files: List of H5 file paths / directory
+    :return: nothing 
+    """
+    
+    try:
+        # If h5_files is a directory, get all H5 files in it
+        if isinstance(h5_files, str) and os.path.isdir(h5_files):
+            h5_files = glob.glob(os.path.join(h5_files, "**", "*.h5"), recursive=True)
 
+        # Create result directory if it doesn't exist (absolute path)
+        os.makedirs(result_dir, exist_ok=True)
+        sorted_files = []
+        for h5_file in h5_files:
+            dm_value = find_dm_of_file(h5_file)
+            dm_dir = os.path.join(result_dir, f"DM_{dm_value:.2f}")
+            os.makedirs(dm_dir, exist_ok=True)
+            dest_path = os.path.join(dm_dir, os.path.basename(h5_file))
+            os.rename(h5_file, dest_path)
+            sorted_files.append(dest_path)
 
+        return sorted_files
+    except Exception as e:
+        logger.error(f"Failed to sort H5 files: {str(e)}")
+        raise
+def find_dm_of_file(file_path):
+    """
+    Extract DM value from file name.
+
+    :param file_path: Path to H5 file
+    :return: Extracted DM value as float
+    """
+    try:
+        filename = os.path.basename(file_path)
+        # Assuming filename format is like "data_dm_123.45.h5"
+        dm_str = filename.split("_dm_")[1].split(".h5")[0]
+        return float(dm_str)
+    except Exception as e:
+        logger.error(f"Failed to extract DM from {file_path}: {str(e)}")
+        raise
 def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
     """
     Process a batch of H5 files and return preprocessed data.
@@ -126,3 +167,4 @@ def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
   ##---------------------------unit testing code---------------------------------##
 #data_files = ["test.h5"]
 #ft_batch, dt_batch, valid_files = process_batch(data_files)
+sort_h5_files_by_dm("/home/aamod/spotlight-data","/home/aamod/sorted_spotlight_data_files")
