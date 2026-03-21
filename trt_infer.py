@@ -233,9 +233,9 @@ def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value
     """
     timing_results = []
     for i in range(repetitions):
-        start_time = time.time()
+        start_time = time()
         results = run_inference_on_h5_folder(engine_path, h5_folder, batch_size, ft_dim, dt_dim)
-        end_time = time.time()
+        end_time = time()
         latency = end_time - start_time
         timing_results.append(latency)
         print(f"Run {i+1}/{repetitions}: Latency = {latency:.4f} seconds")
