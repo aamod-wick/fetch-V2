@@ -256,26 +256,32 @@ def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value
 
 def main(args):
     engine_path = resolve_engine_path(args.engine_name, suffix=args.engine_suffix)
-
     if not engine_path.exists():
         raise FileNotFoundError(f"Engine file not found: {engine_path}")
 
     h5_folder = Path(args.h5_folder)
     if not h5_folder.is_dir():
         raise NotADirectoryError(f"H5 folder not found: {h5_folder}")
-    if(args.run_timing):
-        # Extract DM value from folder name (assumes format like "DM_123.45")
-        dm_value = find_dm_of_file(str(h5_folder))
-        run_timed_inference_on_h5_folder(
-            engine_path=engine_path,
-            h5_folder=h5_folder,
-            DM_value=dm_value,
-            batch_size=args.batch_size,
-            ft_dim=tuple(args.ft_dim),
-            dt_dim=tuple(args.dt_dim),
-            repetitions=args.timing_repetitions,
-            timing_result_path=args.timing_result_path
-        )
+    if args.run_timing:
+        # Iterate first-level subdirectories only (each subdir = one DM bucket)
+        dm_subdirs = sorted([p for p in h5_folder.iterdir() if p.is_dir()])
+        if not dm_subdirs:
+            raise FileNotFoundError(f"No subdirectories found in {h5_folder}")
+
+        for subdir in dm_subdirs:
+            dm_value = find_dm_of_file(str(subdir))
+            print(f"\nRunning timed inference for {subdir.name} (DM={dm_value})")
+            run_timed_inference_on_h5_folder(
+                engine_path=engine_path,
+                h5_folder=subdir,  # run on subdir, not main folder
+                DM_value=dm_value,
+                batch_size=args.batch_size,
+                ft_dim=tuple(args.ft_dim),
+                dt_dim=tuple(args.dt_dim),
+                repetitions=args.timing_repetitions,
+                timing_result_path=args.timing_result_path,
+            )
+        print(f"\nInference complete — {len(dm_subdirs)} DM buckets processed.")
     else:
         results = run_inference_on_h5_folder(
         engine_path=engine_path,
@@ -285,7 +291,7 @@ def main(args):
         dt_dim=tuple(args.dt_dim),
     )
 
-    print(f"\nInference complete — {len(results)} candidates processed.")
+        print(f"\nInference complete — {len(results)} candidates processed.")
     for fname, output in results.items():
         for out_name, arr in output.items():
             print(f"  {fname}  |  {out_name}: {arr}")
