@@ -245,14 +245,14 @@ def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value
     
     summary_df = pd.DataFrame([{
         "DM_value": DM_value,
-        "avg_latency_sec": avg_latency,
+        "Time": avg_latency,
     }])
     
-    summary_df.to_csv(timing_result_path, index=False)
+    
     print(f"\nTiming summary saved to: {timing_result_path}")
     print(f"Average latency: {avg_latency:.4f}")
     
-    return results
+    return summary_df
 
 def main(args):
     engine_path = resolve_engine_path(args.engine_name, suffix=args.engine_suffix)
@@ -267,11 +267,11 @@ def main(args):
         dm_subdirs = sorted([p for p in h5_folder.iterdir() if p.is_dir()])
         if not dm_subdirs:
             raise FileNotFoundError(f"No subdirectories found in {h5_folder}")
-
+        timing_result = pd.DataFrame(columns=["DM_value", "Time"])
         for subdir in dm_subdirs:
             dm_value = find_dm_of_file(str(subdir))
             print(f"\nRunning timed inference for {subdir.name} (DM={dm_value})")
-            run_timed_inference_on_h5_folder(
+            pd.concat([timing_result, run_timed_inference_on_h5_folder(
                 engine_path=engine_path,
                 h5_folder=subdir,  # run on subdir, not main folder
                 DM_value=dm_value,
@@ -280,7 +280,8 @@ def main(args):
                 dt_dim=tuple(args.dt_dim),
                 repetitions=args.timing_repetitions,
                 timing_result_path=args.timing_result_path,
-            )
+            )], ignore_index=True)
+        timing_result.to_csv(args.timing_result_path, index=False)
         print(f"\nInference complete — {len(dm_subdirs)} DM buckets processed.")
     else:
         results = run_inference_on_h5_folder(
