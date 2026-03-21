@@ -271,7 +271,7 @@ def main(args):
         for subdir in dm_subdirs:
             dm_value = find_dm_of_file(str(subdir))
             print(f"\nRunning timed inference for {subdir.name} (DM={dm_value})")
-            pd.concat([timing_result, run_timed_inference_on_h5_folder(
+            timing_result = pd.concat([timing_result, run_timed_inference_on_h5_folder(
                 engine_path=engine_path,
                 h5_folder=subdir,  # run on subdir, not main folder
                 DM_value=dm_value,
@@ -293,35 +293,35 @@ def main(args):
     )
 
         print(f"\nInference complete — {len(results)} candidates processed.")
-    for fname, output in results.items():
-        for out_name, arr in output.items():
-            print(f"  {fname}  |  {out_name}: {arr}")
-    all_candidates = []
-    all_probabilities = []
+        for fname, output in results.items():
+            for out_name, arr in output.items():
+                print(f"  {fname}  |  {out_name}: {arr}")
+        all_candidates = []
+        all_probabilities = []
 
-    for fname, output in results.items():
-        # output is a dict of {output_name: array} per file
-        # assumes first output contains [prob_negative, prob_positive]
-        first_output = next(iter(output.values()))
-        prob = float(first_output[1])          # column 1 = FRB probability
-        all_candidates.append(fname)
-        all_probabilities.append(prob)
+        for fname, output in results.items():
+            # output is a dict of {output_name: array} per file
+            # assumes first output contains [prob_negative, prob_positive]
+            first_output = next(iter(output.values()))
+            prob = float(first_output[1])          # column 1 = FRB probability
+            all_candidates.append(fname)
+            all_probabilities.append(prob)
 
-    results_dict = {
-        "candidate":   all_candidates,
-        "probability": all_probabilities,
-        "label": (np.array(all_probabilities) >= args.probability).astype(int),
-    }
-    if(args.results_file):
-        results_file = Path(args.results_file)
-    else:
-        results_file = Path(args.h5_folder) / f"results_{args.engine_name}_trt.csv"
-    pd.DataFrame(results_dict).to_csv(results_file, index=False)
-    print(f"Results saved to: {results_file}")
+        results_dict = {
+            "candidate":   all_candidates,
+            "probability": all_probabilities,
+            "label": (np.array(all_probabilities) >= args.probability).astype(int),
+        }
+        if(args.results_file):
+            results_file = Path(args.results_file)
+        else:
+            results_file = Path(args.h5_folder) / f"results_{args.engine_name}_trt.csv"
+        pd.DataFrame(results_dict).to_csv(results_file, index=False)
+        print(f"Results saved to: {results_file}")
 
-    num_detections = sum(results_dict["label"])
-    print(f"{len(all_candidates)} candidates processed, "
-          f"{num_detections} detections above threshold {args.probability}")
+        num_detections = sum(results_dict["label"])
+        print(f"{len(all_candidates)} candidates processed, "
+            f"{num_detections} detections above threshold {args.probability}")
 
 
 if __name__ == "__main__":
