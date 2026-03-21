@@ -135,24 +135,45 @@ def sort_h5_files_by_dm(h5_files, result_dir="sorted_files"):
         raise
 def find_dm_of_file(file_path):
     """
-    Extract DM value from file name.
-    File format: MJD60859.1807433_T60.0000000_DM2000.00000_SNR10.00000.h5
+    Extract DM value from file name or folder name.
     
-    :param file_path: Path to H5 file
+    Handles:
+    - Filename: MJD60859.1807433_T60.0000000_DM2000.00000_SNR10.00000.h5
+    - Folder name: DM_100.00
+    - Alternative: candidate_dm_123.45.h5
+    
+    :param file_path: Path to H5 file or folder
     :return: Extracted DM value as float
     """
     try:
-        filename = os.path.basename(file_path)
-        # Extract DM value from pattern like DM2000.00000
-        # Find "DM" and then get the number that follows
+        # Get just the name (file or folder) without path
+        name = os.path.basename(file_path)
+        
         import re
-        match = re.search(r'_DM([0-9.]+)_', filename)
+        
+        # Pattern 1: Folder name like DM_100.00
+        match = re.search(r'^DM_([0-9.]+)$', name)
         if match:
             return float(match.group(1))
-        else:
-            # Fallback to old method if pattern not found
-            dm_str = filename.split("_dm_")[1].split(".h5")[0]
-            return float(dm_str)
+        
+        # Pattern 2: Filename with _DM2000.00000_ pattern
+        match = re.search(r'_DM([0-9.]+)_', name)
+        if match:
+            return float(match.group(1))
+        
+        # Pattern 3: Filename with _dm_2000.00000 pattern (lowercase)
+        match = re.search(r'_dm_([0-9.]+)', name, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        
+        # Pattern 4: Just DM2000.00000 at any position
+        match = re.search(r'DM([0-9.]+)', name, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        
+        # If no pattern found, raise error with helpful message
+        raise ValueError(f"Cannot extract DM value from: {file_path}. Expected format like 'DM_100.00' (folder) or '*_DM100.00_*' (file)")
+        
     except Exception as e:
         logger.error(f"Failed to extract DM from {file_path}: {str(e)}")
         raise
