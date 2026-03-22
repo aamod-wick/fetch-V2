@@ -3,6 +3,8 @@ TensorRT INT8 Engine Builder for FETCH Fast Radio Burst Detection.
 Calibration uses H5 files containing freq-time and DM-time data.
 """
 
+from pathlib import Path
+
 import tensorrt as trt
 import os
 import sys
@@ -182,19 +184,19 @@ class EngineBuilder:
         self.network = None
         self.parser = None
 
-    def create_network(self, onnx_path, batch_size=1, dynamic_batch_size=None):
+    def create_network(self, onnx_model_id, batch_size=1, dynamic_batch_size=None):
         """
         Parse ONNX and create the TensorRT network.
 
-        :param onnx_path: Path to the ONNX model.
+        :param onnx_model_id: ID of the ONNX model to download and parse.
         :param batch_size: Static batch size (used only if dynamic_batch_size is None).
         :param dynamic_batch_size: Comma-separated MIN,OPT,MAX or list of 3 ints.
                                    OPT is a tuning hint and is independent of calib batch size.
         """
         self.network = self.builder.create_network(0)
         self.parser = trt.OnnxParser(self.network, self.trt_logger)
-
-        onnx_path = os.path.realpath(onnx_path)
+        onnx_path = download_model(onnx_model_id, "models")
+        
         with open(onnx_path, "rb") as f:
             if not self.parser.parse(f.read()):
                 print(f"[ERROR] Failed to parse ONNX: {onnx_path}")
@@ -237,7 +239,7 @@ class EngineBuilder:
 
     def create_engine(
         self,
-        engine_path,
+        input_name,
         calib_input=None,
         calib_cache=None,
         calib_num_images=500,
@@ -246,15 +248,17 @@ class EngineBuilder:
         """
         Build and serialize the INT8 TensorRT engine.
 
-        :param engine_path: Output path for the serialized engine.
+        :param input_name: Name of the engine.
         :param calib_input: Directory containing H5 files for calibration.
         :param calib_cache: Path to read/write the INT8 calibration cache.
         :param calib_num_images: Max number of H5 files to use for calibration.
         :param calib_batch_size: Samples per calibration forward pass.
         """
-        engine_path = os.path.realpath(engine_path)
-        os.makedirs(os.path.dirname(engine_path), exist_ok=True)
-
+        input_name = Path(input_name)
+        stem = input_name.stem if input_name.suffix == ".engine" else input_name.name
+        engine_name = f"{stem}-INT8.engine"
+        engine_path = Path("engines") / engine_name
+        engine_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.builder.platform_has_fast_int8:
             print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
 
@@ -300,12 +304,12 @@ class EngineBuilder:
 def main(args):
     builder = EngineBuilder(verbose=args.verbose, workspace=args.workspace)
     builder.create_network(
-        onnx_path=args.onnx,
+        onnx_model_id=args.onnx,
         batch_size=args.batch_size,
         dynamic_batch_size=args.dynamic_batch_size,
     )
     builder.create_engine(
-        engine_path=args.engine,
+        input_name=args.engine,
         calib_input=args.calib_input,
         calib_cache=args.calib_cache,
         calib_num_images=args.calib_num_images,
@@ -318,9 +322,9 @@ if __name__ == "__main__":
         description="Build a TensorRT INT8 engine for FETCH FRB detection."
     )
     parser.add_argument("-o", "--onnx", required=True,
-                        help="Path to input ONNX model")
+                        help="INDEX of input ONNX model")
     parser.add_argument("-e", "--engine", required=True,
-                        help="Output path for the TRT engine")
+                        help="Output name for the TRT engine")
     parser.add_argument("-b", "--batch_size", default=1, type=int,
                         help="Static batch size (ignored if --dynamic_batch_size set), default: 1")
     parser.add_argument("-d", "--dynamic_batch_size", default=None,
