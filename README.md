@@ -1,4 +1,4 @@
-# FETCH -TensorRT V2  
+# FETCH -TensorRT V2  pipeline (ONNX-TENSORRT version)
 This is the fetch fast radio burst detector in TensorRT version 2. The preliminary script for this repo can be found here :  [Link to github](https://github.com/aamod-wick/TENORRT-INTEGRATION-spotlight)  
 
 -------
