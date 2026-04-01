@@ -7,5 +7,4 @@ scipy
 h5py
 requests
 logging 
-# for non COLAB enviroments
 cuda-python
