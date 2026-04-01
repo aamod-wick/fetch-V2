@@ -7,7 +7,6 @@ import argparse
 import glob
 from pathlib import Path
 from model_handler import MODEL_REGISTRY, get_default_onnx_dir, download_model
-from cuda_utilities import Common  # Import Common class for CUDA utilities
 class EngineBuilder:
     """
     Parses an ONNX graph and builds a TensorRT engine from it.

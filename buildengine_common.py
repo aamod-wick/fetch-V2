@@ -15,70 +15,8 @@ import scipy.signal as s
 import h5py
 from cuda import cudart
 from cuda_utilities import Common
-from model_handler import download_model # For potential future use of model registry or ONNX paths
-
-
-# ---------------------------------------------------------------------------
-# H5 Data Preprocessing
-# ---------------------------------------------------------------------------
-
-def preprocess_ft_data(data):
-    data = np.nan_to_num(data.astype(np.float32))
-    data = s.detrend(data)
-    data = data - np.median(data)
-    std = np.std(data)
-    if std > 0:
-        data = data / std
-    return np.nan_to_num(data)
-
-
-def preprocess_dt_data(data):
-    data = np.nan_to_num(data.astype(np.float32))
-    data = data - np.median(data)
-    std = np.std(data)
-    if std > 0:
-        data = data / std
-    return np.nan_to_num(data)
-
-
-def load_and_preprocess_h5(h5_path, ft_dim=(256, 256), dt_dim=(256, 256)):
-    """
-    Load and preprocess a single H5 file.
-    Returns ft_data and dt_data each with shape (H, W, 1).
-    """
-    with h5py.File(h5_path, "r") as f:
-        ft_raw = np.array(f["data_freq_time"], dtype=np.float32).T
-        dt_raw = np.array(f["data_dm_time"], dtype=np.float32)
-
-    ft = preprocess_ft_data(ft_raw)
-    dt = preprocess_dt_data(dt_raw)
-
-    ft = np.reshape(ft, (*ft_dim, 1))
-    dt = np.reshape(dt, (*dt_dim, 1))
-    return ft, dt
-
-
-def h5_batch_generator(h5_files, batch_size=8):
-    """
-    Yields (ft_batch, dt_batch, file_paths) for each batch of H5 files.
-    ft_batch and dt_batch have shape (N, 256, 256, 1).
-    Skips files that fail to load.
-    """
-    for i in range(0, len(h5_files), batch_size):
-        batch_files = h5_files[i: i + batch_size]
-        ft_list, dt_list, valid = [], [], []
-
-        for path in batch_files:
-            try:
-                ft, dt = load_and_preprocess_h5(path)
-                ft_list.append(ft)
-                dt_list.append(dt)
-                valid.append(path)
-            except Exception as e:
-                print(f"[WARNING] Skipping {path}: {e}")
-
-        if valid:
-            yield np.array(ft_list), np.array(dt_list), valid
+from model_handler import download_model 
+from data_handler import  h5_batch_generator 
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +245,7 @@ def main(args):
         onnx_model_id=args.onnx,
         batch_size=args.batch_size,
         dynamic_batch_size=args.dynamic_batch_size,
+        precision = args.precision
     )
     builder.create_engine(
         input_name=args.engine,
@@ -342,6 +281,8 @@ if __name__ == "__main__":
                         help="Max H5 files to use for calibration, default: 500")
     parser.add_argument("--calib_batch_size", default=8, type=int,
                         help="Batch size per calibration pass, default: 8")
+    parser.add_argument("--precision", default="int8", choices=["int8", "fp16", "fp32"],
+                        help="Precision mode to build in, default: int8")
 
     args = parser.parse_args()
 
@@ -352,35 +293,3 @@ if __name__ == "__main__":
             sys.exit(1)
 
     main(args)
-#below is the hardcoded test / demo entry ; swap with the entry point above if you want to test the INT8 engine
-'''
-if __name__ == "__main__":
-    # Set to True to run the hardcoded Colab-friendly demo instead of CLI parsing.
-    RUN_DEMO = True
-
-    if RUN_DEMO:
-        class DemoArgs:
-            # Hardcoded paths — adjust to your Colab paths
-            onnx = "/content/model.onnx"
-            engine = "/content/model_int8.engine"
-            # Static batch (ignored if dynamic_batch_size is set)
-            batch_size = 1
-            # Use None for static, or e.g. "1,4,8" for dynamic
-            dynamic_batch_size = None
-            verbose = True
-            # Workspace in GB
-            workspace = 4
-            # Calibration data (directory of .h5 files) and cache path
-            calib_input = "/content/calib_h5"
-            calib_cache = "/content/calib.cache"
-            # Smaller numbers for quick Colab runs
-            calib_num_images = 16
-            calib_batch_size = 4
-
-        main(DemoArgs())
-        sys.exit(0)
-
-    parser = argparse.ArgumentParser(
-        description="Build a TensorRT INT8 engine for FETCH FRB detection."
-    )
-    '''

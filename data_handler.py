@@ -34,7 +34,9 @@ def preprocess_ft_data(data):
 
     # Normalize: subtract median, divide by standard deviation
     data = data - np.median(data)
-    data = data / np.std(data)
+    std = np.std(data)
+    if std > 0:
+        data = data / std
 
     # Handle any remaining NaNs (in case std was 0)
     data = np.nan_to_num(data)
@@ -52,7 +54,9 @@ def preprocess_dt_data(data):
 
     # Normalize: subtract median, divide by standard deviation
     data = data - np.median(data)
-    data = data / np.std(data)
+    std = np.std(data)
+    if std > 0:
+        data = data / std
 
     # Handle any remaining NaNs (in case std was 0)
     data = np.nan_to_num(data)
@@ -88,6 +92,28 @@ def load_and_preprocess_h5_data(h5_file_path, ft_dim=(256, 256), dt_dim=(256, 25
     except Exception as e:
         logger.error(f"Failed to load/preprocess {h5_file_path}: {str(e)}")
         raise
+def h5_batch_generator(h5_files, batch_size=8):
+    """
+    Yields (ft_batch, dt_batch, file_paths) for each batch of H5 files.
+    ft_batch and dt_batch have shape (N, 256, 256, 1).
+    Skips files that fail to load.
+    """
+    for i in range(0, len(h5_files), batch_size):
+        batch_files = h5_files[i: i + batch_size]
+        ft_list, dt_list, valid = [], [], []
+
+        for path in batch_files:
+            try:
+                ft, dt = load_and_preprocess_h5_data(path,(256, 256),(256, 256))
+                ft_list.append(ft)
+                dt_list.append(dt)
+                valid.append(path)
+            except Exception as e:
+                print(f"[WARNING] Skipping {path}: {e}")
+
+        if valid:
+            yield np.array(ft_list), np.array(dt_list), valid
+
 def sort_h5_files_by_dm(h5_files, result_dir="sorted_files"):
     """
     Sort H5 files based on DM value extracted from file name.
@@ -210,7 +236,3 @@ def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
             dt_batch = np.array(dt_batch)
 
             yield ft_batch, dt_batch, valid_files
-  ##---------------------------unit testing code---------------------------------##
-#data_files = ["test.h5"]
-#ft_batch, dt_batch, valid_files = process_batch(data_files)
-#sort_h5_files_by_dm("/home/aamod/spotlight-data","/home/aamod/sorted_spotlight_data_files")

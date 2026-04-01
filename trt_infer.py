@@ -193,7 +193,7 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
     :param dt_dim:      DM-time spatial dims expected by the model
     :return:            Dict mapping filename → model output arrays
     """
-    h5_files = sorted(glob.glob(str(h5_folder / "*.h5")))
+    h5_files = sorted(glob.glob(os.path.join(str(h5_folder), "**", "*.h5"), recursive=True))
     if not h5_files:
         raise FileNotFoundError(f"No .h5 files found in {h5_folder}")
 
