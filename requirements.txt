@@ -1,6 +1,4 @@
-tensorrt-cu11==10.0.1
-tensorrt-cu11-bindings==10.0.1
-tensorrt-cu11-libs==10.0.1
+tensorrt==10.0.1
 pandas
 numpy
 scipy
