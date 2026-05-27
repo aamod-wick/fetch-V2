@@ -126,7 +126,7 @@ class TensorRTInfer:
         Execute inference on FT and DT batches with dynamic shapes.
         """
         # Set input shapes based on actual data
-        if self.dm_time_only:
+        if not self.dm_time_only:
             input_shapes = {
                 "data_freq_time": ft_batch.shape,
                 "data_dm_time": dt_batch.shape
