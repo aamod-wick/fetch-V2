@@ -36,22 +36,24 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
     which reflects the ONNX input order. Verify with a debug print if unsure.
     """
 
-    def __init__(self, cache_file, h5_files, calib_batch_size=8):
+    def __init__(self, cache_file, h5_files, calib_batch_size=8,dm_time_only = False):
         super().__init__()
         self.cache_file = cache_file
         self.calib_batch_size = calib_batch_size
         self.total = len(h5_files)
         self.processed = 0
+        self.dm_time_only = dm_time_only
         self.common = Common()
 
         # GPU allocations for both inputs — fixed shape (B, 256, 256, 1) float32
         size = int(np.dtype(np.float32).itemsize * calib_batch_size * 256 * 256 * 1)
-        self.ft_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+        if(not dm_time_only):
+            self.ft_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
         self.dt_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
 
         # Wire up the generator only if there are files to process
         if h5_files:
-            self.batch_generator = h5_batch_generator(h5_files, batch_size=calib_batch_size)
+            self.batch_generator = h5_batch_generator(h5_files, batch_size=calib_batch_size, dm_time_only=dm_time_only)
         else:
             self.batch_generator = iter([])  # empty — will rely on cache
 
@@ -64,24 +66,22 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         `names` contains the ONNX input names in TensorRT's expected order.
         Returned pointer list must match that same order.
         """
-        # Uncomment once to verify input order during first run:
-        # print(f"[DEBUG] Calibration input names from TRT: {names}")
-
         try:
-            ft_batch, dt_batch, files = next(self.batch_generator)
-            self.processed += len(files)
+            if(not self.dm_time_only):
+                ft_batch, dt_batch, files = next(self.batch_generator)
+                self.common.memcpy_host_to_device(self.ft_allocation, np.ascontiguousarray(ft_batch))#only account ft when not using dm_time_only moddel for calibration
+            else:
+                dt_batch, files = next(self.batch_generator)
+            self.common.memcpy_host_to_device(self.dt_allocation, np.ascontiguousarray(dt_batch))
+            self.processed += len(files) #just a manual check to see how many files are processed 
             print(f"[CALIBRATION] Processed {self.processed} / {self.total} files")
 
-            self.common.memcpy_host_to_device(
-                self.ft_allocation, np.ascontiguousarray(ft_batch)
-            )
-            self.common.memcpy_host_to_device(
-                self.dt_allocation, np.ascontiguousarray(dt_batch)
-            )
-
-            # Order: ft first, dt second — must match ONNX export input order
-            return [int(self.ft_allocation), int(self.dt_allocation)]
-
+            if(not self.dm_time_only):
+                # Order: ft first, dt second — must match ONNX export input order
+                return [int(self.ft_allocation), int(self.dt_allocation)]
+            else:
+                # Only DM-time input for calibration
+                return [int(self.dt_allocation)]
         except StopIteration:
             print("[CALIBRATION] All calibration batches complete.")
             return None
@@ -106,10 +106,10 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
 
 class EngineBuilder:
     """
-    Parses an ONNX graph and builds a TensorRT INT8 engine.
+    Parses an ONNX graph and builds a engine : supported precisions : FP32, FP16, INT8,FP 8.
     """
 
-    def __init__(self, verbose=False, workspace=8):
+    def __init__(self, verbose=False, workspace=8, dm_time_only=False, precision="FP32"):
         self.trt_logger = trt.Logger(trt.Logger.VERBOSE if verbose else trt.Logger.INFO)
         trt.init_libnvinfer_plugins(self.trt_logger, namespace="")
 
@@ -121,17 +121,19 @@ class EngineBuilder:
 
         self.network = None
         self.parser = None
+        self.dm_time_only = dm_time_only
+        self.precision = precision.lower()
 
-    def create_network(self, onnx_model_id, batch_size=1, dynamic_batch_size=None):
+    def create_network(self, onnx_model_id, dynamic_batch_size=None):
         """
         Parse ONNX and create the TensorRT network.
 
         :param onnx_model_id: ID of the ONNX model to download and parse.
-        :param batch_size: Static batch size (used only if dynamic_batch_size is None).
         :param dynamic_batch_size: Comma-separated MIN,OPT,MAX or list of 3 ints.
                                    OPT is a tuning hint and is independent of calib batch size.
         """
-        self.network = self.builder.create_network(0)
+        flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        self.network = self.builder.create_network(flags)
         self.parser = trt.OnnxParser(self.network, self.trt_logger)
         onnx_path = download_model(onnx_model_id, "models")
         
@@ -160,9 +162,10 @@ class EngineBuilder:
                     opt_shape = (b_opt, 256, 256, 1)
                     max_shape = (b_max, 256, 256, 1)
                 else:
-                    # Static fallback within a dynamic profile
-                    min_shape = opt_shape = max_shape = (batch_size, 256, 256, 1)
-
+                    # dyanamic fallback if params not spcifieid, default to 1,8,32
+                    min_shape = (1, 256, 256, 1)
+                    opt_shape = (8, 256, 256, 1)
+                    max_shape = (32, 256, 256, 1)
                 profile.set_shape(inp.name, min_shape, opt_shape, max_shape)
                 print(f"  Profile: MIN={min_shape}  OPT={opt_shape}  MAX={max_shape}")
 
@@ -180,11 +183,11 @@ class EngineBuilder:
         input_name,
         calib_input=None,
         calib_cache=None,
-        calib_num_images=500,
-        calib_batch_size=8,
+        calib_num_images=None,
+        calib_batch_size=None,
     ):
         """
-        Build and serialize the INT8 TensorRT engine.
+        Build and serialize the TensorRT engine in precisions : FP32, FP16, INT8, FP8.
 
         :param input_name: Name of the engine.
         :param calib_input: Directory containing H5 files for calibration.
@@ -194,37 +197,35 @@ class EngineBuilder:
         """
         input_name = Path(input_name)
         stem = input_name.stem if input_name.suffix == ".engine" else input_name.name
-        engine_name = f"{stem}-INT8.engine"
+        engine_name = f"{stem}-{self.precision.upper()}.engine"
         engine_path = Path("engines") / engine_name
         engine_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.builder.platform_has_fast_int8:
+        precision = self.precision
+        if precision == "int8" and not self.builder.platform_has_fast_int8:
             print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
-
-        self.config.set_flag(trt.BuilderFlag.INT8)
+        if precision == "fp16" and not self.builder.platform_has_fast_fp16:
+            print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
+        self.config.set_flag(trt.BuilderFlag.precision.upper())
 
         # --- Set up calibrator ---
-        if calib_cache is not None and os.path.exists(calib_cache):
-            print(f"[INFO] Existing calibration cache found at {calib_cache} — skipping H5 calibration.")
-            h5_files = []
-        else:
-            if calib_input is None:
-                print("[ERROR] calib_input directory required when no calibration cache exists.")
-                sys.exit(1)
-            h5_files = sorted(glob.glob(os.path.join(calib_input, "**/*.h5"), recursive=True))
-            if not h5_files:
-                print(f"[ERROR] No H5 files found in: {calib_input}")
-                sys.exit(1)
-            h5_files = h5_files[:calib_num_images]
-            print(f"[INFO] Using {len(h5_files)} H5 files for INT8 calibration (batch_size={calib_batch_size}).")
+        if precision == "int8":
+            if calib_cache is not None and os.path.exists(calib_cache):
+                print(f"[INFO] Existing calibration cache found at {calib_cache} — skipping H5 calibration.")
+                h5_files = []
+            else:
+                if calib_input is None:
+                    print("[ERROR] calib_input directory required when no calibration cache exists.")
+                    sys.exit(1)
+                h5_files = sorted(glob.glob(os.path.join(calib_input, "**/*.h5"), recursive=True))
+                if not h5_files:
+                    print(f"[ERROR] No H5 files found in: {calib_input}")
+                    sys.exit(1)
+                h5_files = h5_files[:calib_num_images]
+                print(f"[INFO] Using {len(h5_files)} H5 files for INT8 calibration (batch_size={calib_batch_size}).")
 
-        self.config.int8_calibrator = EngineCalibrator(
-            cache_file=calib_cache,
-            h5_files=h5_files,
-            calib_batch_size=calib_batch_size,
-        )
-
+            self.config.int8_calibrator = EngineCalibrator(cache_file=calib_cache,h5_files=h5_files,calib_batch_size=calib_batch_size)       
         # --- Build ---
-        print(f"[INFO] Building INT8 engine -> {engine_path}")
+        print(f"[INFO] Building {precision.upper()} engine -> {engine_path}")
         engine_bytes = self.builder.build_serialized_network(self.network, self.config)
         if engine_bytes is None:
             print("[ERROR] Engine build failed.")
@@ -240,20 +241,9 @@ class EngineBuilder:
 # ---------------------------------------------------------------------------
 
 def main(args):
-    builder = EngineBuilder(verbose=args.verbose, workspace=args.workspace)
-    builder.create_network(
-        onnx_model_id=args.onnx,
-        batch_size=args.batch_size,
-        dynamic_batch_size=args.dynamic_batch_size,
-        precision = args.precision
-    )
-    builder.create_engine(
-        input_name=args.engine,
-        calib_input=args.calib_input,
-        calib_cache=args.calib_cache,
-        calib_num_images=args.calib_num_images,
-        calib_batch_size=args.calib_batch_size,
-    )
+    builder = EngineBuilder(verbose=args.verbose, workspace=args.workspace,precision = args.precision,dm_time_only=args.dm_time_only)
+    builder.create_network(onnx_model_id=args.onnx,dynamic_batch_size=args.dynamic_batch_size)
+    builder.create_engine(input_name=args.engine,calib_input=args.calib_input,calib_cache=args.calib_cache,calib_num_images=args.calib_num_images,calib_batch_size=args.calib_batch_size)
 
 
 if __name__ == "__main__":
@@ -264,9 +254,7 @@ if __name__ == "__main__":
                         help="INDEX of input ONNX model")
     parser.add_argument("-e", "--engine", required=True,
                         help="Output name for the TRT engine")
-    parser.add_argument("-b", "--batch_size", default=1, type=int,
-                        help="Static batch size (ignored if --dynamic_batch_size set), default: 1")
-    parser.add_argument("-d", "--dynamic_batch_size", default=None,
+    parser.add_argument("-d", "--dynamic_batch_size", default=[1, 8, 32], type=str,
                         help="Dynamic batch size as MIN,OPT,MAX e.g. 1,8,32. "
                              "OPT is a tuning hint and is independent of calib_batch_size.")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -283,6 +271,7 @@ if __name__ == "__main__":
                         help="Batch size per calibration pass, default: 8")
     parser.add_argument("--precision", default="int8", choices=["int8", "fp16", "fp32"],
                         help="Precision mode to build in, default: int8")
+    parser.add_argument("-D","--dm_time_only", action="store_true",default=False,type=bool,help="Only use DM-Time data for inference")
 
     args = parser.parse_args()
 

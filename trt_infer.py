@@ -9,15 +9,15 @@ import glob
 import pandas as pd 
 import os
 from cuda_utilities import Common  # Import Common class
-from data_handler import load_and_preprocess_h5_data, process_batch,find_dm_of_file,sort_h5_files_by_dm #import data handling functions for H5 files
+from data_handler import process_batch,find_dm_of_file #import data handling functions for H5 files
 
 class TensorRTInfer:
     """
-    Implements inference for a two-input TensorRT engine with dynamic batching.
+    Implements inference for a two-input or single-input TensorRT engine with dynamic batching.
     """
     
 
-    def __init__(self, engine_path,common=None):
+    def __init__(self, engine_path,common=None,dm_time_only=False):
         """
         :param engine_path: The path to the serialized engine to load from disk.
         """
@@ -38,6 +38,7 @@ class TensorRTInfer:
         self.inputs = []
         self.outputs = []
         self.allocations = []
+        self.dm_time_only = dm_time_only  # Set to True if model only uses DM-time input
         self.inputs_by_name = {}
 
         for i in range(self.engine.num_io_tensors):
@@ -125,25 +126,36 @@ class TensorRTInfer:
         Execute inference on FT and DT batches with dynamic shapes.
         """
         # Set input shapes based on actual data
-        input_shapes = {
-            "data_freq_time": ft_batch.shape,
-            "data_dm_time": dt_batch.shape
-        }
+        if self.dm_time_only:
+            input_shapes = {
+                "data_freq_time": ft_batch.shape,
+                "data_dm_time": dt_batch.shape
+            }
+            ft_input = self.inputs_by_name.get("data_freq_time")
+        else:
+            input_shapes = {
+                "data_dm_time": dt_batch.shape
+            }
         self.set_input_shapes(input_shapes)
 
         # Copy inputs to device
-        ft_input = self.inputs_by_name.get("data_freq_time")
+        
         dt_input = self.inputs_by_name.get("data_dm_time")
 
-        if ft_input is None or dt_input is None:
+        if dt_input is None:
             # Try alternative names
-            ft_input = self.inputs_by_name.get("ft_batch")
             dt_input = self.inputs_by_name.get("dt_batch")
 
-        if ft_input is None or dt_input is None:
+        if  dt_input is None:
             raise ValueError("Could not find input bindings for FT and DT data")
-
-        self.common.memcpy_host_to_device(ft_input["allocation"], ft_batch.ravel())
+        if not self.dm_time_only:
+                ft_input = self.inputs_by_name.get("data_freq_time")
+                if ft_input is None:
+                    ft_input = self.inputs_by_name.get("ft_batch")
+                if ft_input is None:
+                    raise ValueError("Could not find input bindings for FT and DT data")
+        if not self.dm_time_only:
+            self.common.memcpy_host_to_device(ft_input["allocation"], ft_batch.ravel())
         self.common.memcpy_host_to_device(dt_input["allocation"], dt_batch.ravel())
 
         # Execute inference
@@ -165,9 +177,9 @@ class TensorRTInfer:
             shape = self.context.get_tensor_shape(inp["name"])
             specs[inp["name"]] = (list(shape), inp["dtype"])
         return specs
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────────
 #  H5 inference pipeline
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────────
 
 def resolve_engine_path(engine_name: str, suffix: str = ".engine") -> Path:
     """
@@ -179,10 +191,7 @@ def resolve_engine_path(engine_name: str, suffix: str = ".engine") -> Path:
     return engine_path
 
 
-def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
-                                batch_size: int = 8,
-                                ft_dim: tuple = (256, 256),
-                                dt_dim: tuple = (256, 256)):
+def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,batch_size: int = 8,ft_dim: tuple = (256, 256),dt_dim: tuple = (256, 256),dm_time_only =False):
     """
     Run TensorRT inference on all H5 files in a folder.
 
@@ -200,7 +209,7 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
     print(f"Found {len(h5_files)} H5 files in {h5_folder}")
     print(f"Loading engine from {engine_path}")
 
-    inferrer = TensorRTInfer(engine_path)
+    inferrer = TensorRTInfer(engine_path,dm_time_only=dm_time_only)
     all_results = {}
 
     for ft_batch, dt_batch, batch_files in process_batch(
@@ -208,8 +217,9 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
     ):
         # Model expects (N, H, W, 1) — process_batch already adds channel dim
         print(f"Running inference on batch of {len(batch_files)} files")
+        
         outputs = inferrer.infer(ft_batch, dt_batch)
-
+        
         # Map each file to its corresponding row in the output arrays
         for idx, h5_file in enumerate(batch_files):
             all_results[Path(h5_file).name] = {
@@ -217,7 +227,7 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,
             }
 
     return all_results
-def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value: float, batch_size: int = 8, ft_dim: tuple = (256, 256), dt_dim: tuple = (256, 256), repetitions: int = 10, timing_result_path: str = "timing_results.csv"):
+def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value: float, batch_size: int = 8, ft_dim: tuple = (256, 256), dt_dim: tuple = (256, 256), repetitions: int = 10, timing_result_path: str = "timing_results.csv",dm_time_only =False):
     """Run inference multiple times to measure latency and save results to CSV
     Get the timing results for each run take the average of the runs and save ot to CSV
     Format of CSV is {dm_value, latency_sec}
@@ -234,7 +244,7 @@ def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value
     timing_results = []
     for i in range(repetitions):
         start_time = time()
-        results = run_inference_on_h5_folder(engine_path, h5_folder, batch_size, ft_dim, dt_dim)
+        results = run_inference_on_h5_folder(engine_path, h5_folder, batch_size, ft_dim, dt_dim,dm_time_only=dm_time_only)
         end_time = time()
         latency = end_time - start_time
         timing_results.append(latency)
@@ -280,6 +290,7 @@ def main(args):
                 dt_dim=tuple(args.dt_dim),
                 repetitions=args.timing_repetitions,
                 timing_result_path=args.timing_result_path,
+                dm_time_only=args.dm_time_only
             )], ignore_index=True)
         timing_result.to_csv(args.timing_result_path, index=False)
         print(f"\nInference complete — {len(dm_subdirs)} DM buckets processed.")
@@ -290,6 +301,7 @@ def main(args):
         batch_size=args.batch_size,
         ft_dim=tuple(args.ft_dim),
         dt_dim=tuple(args.dt_dim),
+        dm_time_only=args.dm_time_only
     )
 
         print(f"\nInference complete — {len(results)} candidates processed.")
@@ -373,7 +385,10 @@ if __name__ == "__main__":
         "--run_timing", type =bool, default=False,
         help="If set, runs timed inference and saves timing results to CSV"
     )
-
+    parser.add_argument(
+        "--dm_time_only", action="store_true",
+        help="Set this flag if the model only uses DM-time input (no freq-time input)"
+    )
     args = parser.parse_args()
     main(args)
 #example usage:

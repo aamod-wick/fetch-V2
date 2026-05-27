@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import string
+import onnx
 from pathlib import Path
 
 import h5py
@@ -167,3 +168,20 @@ def download_model(model_idx, onnx_models_dir):
         if model_path.exists():
             model_path.unlink()
         raise RuntimeError(f"Failed to download model {model_idx}: {str(e)}")
+model = onnx.load("/home/aamod/Downloads/to_delete/model_a.onnx")
+
+qdq_nodes = [node for node in model.graph.node 
+             if node.op_type in ["QuantizeLinear", "DequantizeLinear"]]
+print("..."*10)
+print(f"Q/DQ nodes count: {len(qdq_nodes)}")
+
+for node in qdq_nodes[:10]:
+    print(node.op_type, node.name)
+print("..."*10)
+print(f"Total nodes count: {len(model.graph.node)}")
+for node in model.graph.node[:10]:
+    print(node.op_type, node.name)
+print("..."*10)
+ops = set(node.op_type for node in model.graph.node)
+print(f"Total ops count: {len(ops)}")
+print(ops)
