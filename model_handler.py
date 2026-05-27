@@ -88,6 +88,11 @@ MODEL_REGISTRY = {
         "md5": "b8e0c9a24275a1813bd007088e1b19f7",
         "size_mb": 116.16,
     },
+    "0": {
+        "url": "/content/model/cnn_classifier_gpu.onnx",
+        "md5": "b648fbea6aafff46f4037243a212fc40",
+        "size_mb": 3.2,
+    },
 }
 
 
