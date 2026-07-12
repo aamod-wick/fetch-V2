@@ -45,21 +45,27 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         self.processed = 0
         self.dm_time_only = dm_time_only
         self.common = Common()
+        self.batch_generator = None
+        self.ft_allocation = None
+        self.dt_allocation = None
 
         # GPU allocations for inputs — fixed shape (B, 256, 256, 1) float32
         size = int(np.dtype(np.float32).itemsize * calib_batch_size * 256 * 256 * 1)
         
         # Always allocate DT memory
         self.dt_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+        print(f"[DEBUG] Allocated DT memory: {size} bytes")
         
         # Only allocate FT memory if needed
         if not dm_time_only:
             self.ft_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+            print(f"[DEBUG] Allocated FT memory: {size} bytes")
         else:
             self.ft_allocation = None
 
         # Wire up the generator only if there are files to process
         if h5_files:
+            print(f"[DEBUG] First 5 H5 files: {h5_files[:5]}")
             self.batch_generator = h5_batch_generator(
                 h5_files, 
                 batch_size=calib_batch_size,
@@ -79,33 +85,51 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         """
         # Uncomment once to verify input order during first run:
         # print(f"[DEBUG] Calibration input names from TRT: {names}")
-
+        
+        if self.batch_generator is None:
+            return None
+            
         try:
             batch_data = next(self.batch_generator)
             
             if not self.dm_time_only:
                 ft_batch, dt_batch, files = batch_data
-                self.common.memcpy_host_to_device(
-                    self.ft_allocation, np.ascontiguousarray(ft_batch)
-                )
+                print(f"[DEBUG] FT shape: {ft_batch.shape}, DT shape: {dt_batch.shape}, files: {len(files)}")
+                
+                # Ensure data is contiguous and correct dtype
+                ft_contiguous = np.ascontiguousarray(ft_batch.astype(np.float32))
+                dt_contiguous = np.ascontiguousarray(dt_batch.astype(np.float32))
+                
+                # Verify shapes before copying
+                print(f"[DEBUG] FT contiguous shape: {ft_contiguous.shape}, DT contiguous shape: {dt_contiguous.shape}")
+                
+                self.common.memcpy_host_to_device(self.ft_allocation, ft_contiguous)
+                self.common.memcpy_host_to_device(self.dt_allocation, dt_contiguous)
             else:
                 dt_batch, files = batch_data
+                print(f"[DEBUG] DT shape: {dt_batch.shape}, files: {len(files)}")
+                
+                dt_contiguous = np.ascontiguousarray(dt_batch.astype(np.float32))
+                print(f"[DEBUG] DT contiguous shape: {dt_contiguous.shape}")
+                
+                self.common.memcpy_host_to_device(self.dt_allocation, dt_contiguous)
             
             self.processed += len(files)
             print(f"[CALIBRATION] Processed {self.processed} / {self.total} files")
 
-            self.common.memcpy_host_to_device(
-                self.dt_allocation, np.ascontiguousarray(dt_batch)
-            )
-
-            # Order: ft first, dt second — must match ONNX export input order
+            # Return pointers in the order TensorRT expects (based on `names`)
             if not self.dm_time_only:
                 return [int(self.ft_allocation), int(self.dt_allocation)]
             else:
                 return [int(self.dt_allocation)]
-
+                
         except StopIteration:
             print("[CALIBRATION] All calibration batches complete.")
+            return None
+        except Exception as e:
+            print(f"[ERROR] In get_batch: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def read_calibration_cache(self):
@@ -113,6 +137,7 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
             print(f"[CALIBRATION] Loading cache from: {self.cache_file}")
             with open(self.cache_file, "rb") as f:
                 return f.read()
+        return None
 
     def write_calibration_cache(self, cache):
         if self.cache_file is None:
@@ -230,7 +255,7 @@ class EngineBuilder:
         engine_path.parent.mkdir(parents=True, exist_ok=True)
         precision = self.precision
 
-        # --- Set precision flags ---
+        # --- Set precision flags and calibration (INT8 only) ---
         if precision == "int8":
             if self.builder.platform_has_fast_int8:
                 print("[INFO] INT8 fast mode supported on this device.")
