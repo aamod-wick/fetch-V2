@@ -271,7 +271,7 @@ if __name__ == "__main__":
                         help="Batch size per calibration pass, default: 8")
     parser.add_argument("--precision", default="int8", choices=["int8", "fp16", "fp32"],
                         help="Precision mode to build in, default: int8")
-    parser.add_argument("-D","--dm_time_only", action="store_true",default=False,type=bool,help="Only use DM-Time data for inference")
+    parser.add_argument("-D","--dm_time_only",default=False,type=bool,help="Only use DM-Time data for inference")
 
     args = parser.parse_args()
 

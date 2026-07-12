@@ -1,7 +1,9 @@
-tensorrt==10.0.1
+tensorrt==10.0.1 
+tensorrt-cu12==10.0.1 \
+tensorrt-cu12-libs==10.0.1 \
+tensorrt-cu12-bindings==10.0.1
 pandas
 numpy
 scipy
 h5py
 requests
-cuda-python
