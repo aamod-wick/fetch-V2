@@ -106,7 +106,7 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
 
 class EngineBuilder:
     """
-    Parses an ONNX graph and builds a engine : supported precisions : FP32, FP16, INT8,FP 8.
+    Parses an ONNX graph and builds a engine : supported precisions : FP32, FP16, INT8,FP 8, FP4
     """
 
     def __init__(self, verbose=False, workspace=8, dm_time_only=False, precision="FP32"):
@@ -189,7 +189,7 @@ class EngineBuilder:
         calib_batch_size=None,
     ):
         """
-        Build and serialize the TensorRT engine in precisions : FP32, FP16, INT8, FP8.
+        Build and serialize the TensorRT engine in precisions : FP32, FP16, INT8, FP8 , FP4
 
         :param input_name: Name of the engine.
         :param calib_input: Directory containing H5 files for calibration.
@@ -203,11 +203,22 @@ class EngineBuilder:
         engine_path = Path("engines") / engine_name
         engine_path.parent.mkdir(parents=True, exist_ok=True)
         precision = self.precision
-        if precision == "int8" and not self.builder.platform_has_fast_int8:
-            print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
-        if precision == "fp16" and not self.builder.platform_has_fast_fp16:
-            print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
-        self.config.set_flag(self.precision.upper())
+        if precision == "int8":  
+            if self.builder.platform_has_fast_int8:
+                print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.INT8)
+        elif precision == "fp16": 
+            if self.builder.platform_has_fast_fp16:
+                print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP16)
+        elif precision == "fp8": 
+            if self.builder.platform_has_fast_fp8:
+                print("[WARNING] FP8 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP8)
+        elif precision =="fp4": 
+            if self.builder.platform_has_fast_fp4:
+                print("[WARNING] FP4 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP4)
 
         # --- Set up calibrator ---
         if precision == "int8":
@@ -244,7 +255,7 @@ class EngineBuilder:
 
 def main(args):
     builder = EngineBuilder(verbose=args.verbose, workspace=args.workspace,precision = args.precision,dm_time_only=args.dm_time_only)
-    builder.create_network(onnx_model_id=args.onnx,dynamic_batch_size=args.dynamic_batch_size)
+    builder.create_network(onnx_model_id=args.onnx,dynamic_batch_size=args.dynamic_batch_size,local=args.local)
     builder.create_engine(input_name=args.engine,calib_input=args.calib_input,calib_cache=args.calib_cache,calib_num_images=args.calib_num_images,calib_batch_size=args.calib_batch_size)
 
 
@@ -271,8 +282,8 @@ if __name__ == "__main__":
                         help="Max H5 files to use for calibration, default: 500")
     parser.add_argument("--calib_batch_size", default=8, type=int,
                         help="Batch size per calibration pass, default: 8")
-    parser.add_argument("--precision", default="int8", choices=["int8", "fp16", "fp32"],
-                        help="Precision mode to build in, default: int8")
+    parser.add_argument("--precision", default="fp32", choices=["fp4","fp8", "int8", "fp16", "fp32"],
+                        help="Precision mode to build in, default: fp32")
     parser.add_argument("-D","--dm_time_only",default=False,type=bool,help="Only use DM-Time data for inference")
 
     parser.add_argument("--local", default=False,type=bool, help="Use local(custom) models instead of downloading from the model zoo")
