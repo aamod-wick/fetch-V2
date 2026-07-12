@@ -273,6 +273,8 @@ if __name__ == "__main__":
                         help="Precision mode to build in, default: int8")
     parser.add_argument("-D","--dm_time_only",default=False,type=bool,help="Only use DM-Time data for inference")
 
+    parser.add_argument("--local", default=False,type=bool, help="Use local(custom) models instead of downloading from the model zoo")
+
     args = parser.parse_args()
 
     if args.calib_cache is None or not os.path.exists(args.calib_cache):
