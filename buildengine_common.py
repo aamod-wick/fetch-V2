@@ -83,8 +83,8 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         `names` contains the ONNX input names in TensorRT's expected order.
         Returned pointer list must match that same order.
         """
-        # Uncomment once to verify input order during first run:
-        # print(f"[DEBUG] Calibration input names from TRT: {names}")
+        # DEBUG: Print names to see the order TensorRT expects
+        print(f"[DEBUG] Calibration input names from TRT: {names}")
         
         if self.batch_generator is None:
             return None
@@ -96,33 +96,57 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
                 ft_batch, dt_batch, files = batch_data
                 print(f"[DEBUG] FT shape: {ft_batch.shape}, DT shape: {dt_batch.shape}, files: {len(files)}")
                 
-                # Ensure data is contiguous and correct dtype
+                # Ensure data is contiguous and correct dtype - use ravel() like in inference code
                 ft_contiguous = np.ascontiguousarray(ft_batch.astype(np.float32))
                 dt_contiguous = np.ascontiguousarray(dt_batch.astype(np.float32))
                 
-                # Verify shapes before copying
-                print(f"[DEBUG] FT contiguous shape: {ft_contiguous.shape}, DT contiguous shape: {dt_contiguous.shape}")
-                
+                # Copy to GPU
                 self.common.memcpy_host_to_device(self.ft_allocation, ft_contiguous)
                 self.common.memcpy_host_to_device(self.dt_allocation, dt_contiguous)
+                
+                # IMPORTANT: Create pointer map and return in the EXACT order of 'names'
+                ptr_map = {
+                    'data_freq_time': int(self.ft_allocation),
+                    'data_dm_time': int(self.dt_allocation),
+                    'ft': int(self.ft_allocation),  # fallback names
+                    'dt': int(self.dt_allocation)
+                }
+                
+                # Return pointers in the order TensorRT expects
+                result = [ptr_map.get(name) for name in names]
+                
+                # Ensure no None values
+                if None in result:
+                    print(f"[ERROR] Some input names not found: {names}")
+                    return None
+                    
+                print(f"[DEBUG] Returning pointers in order: {names} -> {result}")
+                return result
+                
             else:
                 dt_batch, files = batch_data
                 print(f"[DEBUG] DT shape: {dt_batch.shape}, files: {len(files)}")
                 
                 dt_contiguous = np.ascontiguousarray(dt_batch.astype(np.float32))
-                print(f"[DEBUG] DT contiguous shape: {dt_contiguous.shape}")
-                
                 self.common.memcpy_host_to_device(self.dt_allocation, dt_contiguous)
-            
+                
+                # Only DT input
+                ptr_map = {
+                    'data_dm_time': int(self.dt_allocation),
+                    'dt': int(self.dt_allocation)
+                }
+                result = [ptr_map.get(name) for name in names]
+                
+                if None in result:
+                    print(f"[ERROR] Some input names not found: {names}")
+                    return None
+                    
+                print(f"[DEBUG] Returning pointers in order: {names} -> {result}")
+                return result
+                
             self.processed += len(files)
             print(f"[CALIBRATION] Processed {self.processed} / {self.total} files")
-
-            # Return pointers in the order TensorRT expects (based on `names`)
-            if not self.dm_time_only:
-                return [int(self.ft_allocation), int(self.dt_allocation)]
-            else:
-                return [int(self.dt_allocation)]
-                
+                    
         except StopIteration:
             print("[CALIBRATION] All calibration batches complete.")
             return None
