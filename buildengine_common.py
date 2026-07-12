@@ -124,7 +124,7 @@ class EngineBuilder:
         self.dm_time_only = dm_time_only
         self.precision = precision.lower()
 
-    def create_network(self, onnx_model_id, dynamic_batch_size=None):
+    def create_network(self, onnx_model_id, dynamic_batch_size=None, local=False):
         """
         Parse ONNX and create the TensorRT network.
 
@@ -135,8 +135,10 @@ class EngineBuilder:
         flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         self.network = self.builder.create_network(flags)
         self.parser = trt.OnnxParser(self.network, self.trt_logger)
-        onnx_path = download_model(onnx_model_id, "models")
-        
+        if(not local):
+            onnx_path = download_model(onnx_model_id, "models")
+        else:
+            onnx_path = Path(onnx_model_id)
         with open(onnx_path, "rb") as f:
             if not self.parser.parse(f.read()):
                 print(f"[ERROR] Failed to parse ONNX: {onnx_path}")
@@ -205,7 +207,7 @@ class EngineBuilder:
             print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
         if precision == "fp16" and not self.builder.platform_has_fast_fp16:
             print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
-        self.config.set_flag(trt.BuilderFlag.precision.upper())
+        self.config.set_flag(self.precision.upper())
 
         # --- Set up calibrator ---
         if precision == "int8":
