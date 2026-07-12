@@ -1,6 +1,7 @@
 """
 TensorRT INT8 Engine Builder for FETCH Fast Radio Burst Detection.
 Calibration uses H5 files containing freq-time and DM-time data.
+Supports FP32, FP16, INT8, FP8, FP4 precisions.
 """
 
 from pathlib import Path
@@ -16,7 +17,7 @@ import h5py
 from cuda import cudart
 from cuda_utilities import Common
 from model_handler import download_model 
-from data_handler import  h5_batch_generator 
+from data_handler import h5_batch_generator
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
     which reflects the ONNX input order. Verify with a debug print if unsure.
     """
 
-    def __init__(self, cache_file, h5_files, calib_batch_size=8,dm_time_only = False):
+    def __init__(self, cache_file, h5_files, calib_batch_size=8, dm_time_only=False):
         super().__init__()
         self.cache_file = cache_file
         self.calib_batch_size = calib_batch_size
@@ -45,15 +46,25 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         self.dm_time_only = dm_time_only
         self.common = Common()
 
-        # GPU allocations for both inputs — fixed shape (B, 256, 256, 1) float32
+        # GPU allocations for inputs — fixed shape (B, 256, 256, 1) float32
         size = int(np.dtype(np.float32).itemsize * calib_batch_size * 256 * 256 * 1)
-        if(not dm_time_only):
-            self.ft_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+        
+        # Always allocate DT memory
         self.dt_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+        
+        # Only allocate FT memory if needed
+        if not dm_time_only:
+            self.ft_allocation = self.common.cuda_call(cudart.cudaMalloc(size))
+        else:
+            self.ft_allocation = None
 
         # Wire up the generator only if there are files to process
         if h5_files:
-            self.batch_generator = h5_batch_generator(h5_files, batch_size=calib_batch_size, dm_time_only=dm_time_only)
+            self.batch_generator = h5_batch_generator(
+                h5_files, 
+                batch_size=calib_batch_size,
+                dm_time_only=dm_time_only
+            )
         else:
             self.batch_generator = iter([])  # empty — will rely on cache
 
@@ -66,22 +77,33 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
         `names` contains the ONNX input names in TensorRT's expected order.
         Returned pointer list must match that same order.
         """
+        # Uncomment once to verify input order during first run:
+        # print(f"[DEBUG] Calibration input names from TRT: {names}")
+
         try:
-            if(not self.dm_time_only):
-                ft_batch, dt_batch, files = next(self.batch_generator)
-                self.common.memcpy_host_to_device(self.ft_allocation, np.ascontiguousarray(ft_batch))#only account ft when not using dm_time_only moddel for calibration
+            batch_data = next(self.batch_generator)
+            
+            if not self.dm_time_only:
+                ft_batch, dt_batch, files = batch_data
+                self.common.memcpy_host_to_device(
+                    self.ft_allocation, np.ascontiguousarray(ft_batch)
+                )
             else:
-                dt_batch, files = next(self.batch_generator)
-            self.common.memcpy_host_to_device(self.dt_allocation, np.ascontiguousarray(dt_batch))
-            self.processed += len(files) #just a manual check to see how many files are processed 
+                dt_batch, files = batch_data
+            
+            self.processed += len(files)
             print(f"[CALIBRATION] Processed {self.processed} / {self.total} files")
 
-            if(not self.dm_time_only):
-                # Order: ft first, dt second — must match ONNX export input order
+            self.common.memcpy_host_to_device(
+                self.dt_allocation, np.ascontiguousarray(dt_batch)
+            )
+
+            # Order: ft first, dt second — must match ONNX export input order
+            if not self.dm_time_only:
                 return [int(self.ft_allocation), int(self.dt_allocation)]
             else:
-                # Only DM-time input for calibration
                 return [int(self.dt_allocation)]
+
         except StopIteration:
             print("[CALIBRATION] All calibration batches complete.")
             return None
@@ -101,12 +123,13 @@ class EngineCalibrator(trt.IInt8EntropyCalibrator2):
 
 
 # ---------------------------------------------------------------------------
-# Engine Builder — INT8 only
+# Engine Builder
 # ---------------------------------------------------------------------------
 
 class EngineBuilder:
     """
-    Parses an ONNX graph and builds a engine : supported precisions : FP32, FP16, INT8,FP 8, FP4
+    Parses an ONNX graph and builds a TensorRT engine.
+    Supported precisions: FP32, FP16, INT8, FP8, FP4
     """
 
     def __init__(self, verbose=False, workspace=8, dm_time_only=False, precision="FP32"):
@@ -124,21 +147,25 @@ class EngineBuilder:
         self.dm_time_only = dm_time_only
         self.precision = precision.lower()
 
-    def create_network(self, onnx_model_id, dynamic_batch_size=None, local=False):
+    def create_network(self, onnx_model_id, batch_size=1, dynamic_batch_size=None, local=False):
         """
         Parse ONNX and create the TensorRT network.
 
         :param onnx_model_id: ID of the ONNX model to download and parse.
+        :param batch_size: Static batch size (used only if dynamic_batch_size is None).
         :param dynamic_batch_size: Comma-separated MIN,OPT,MAX or list of 3 ints.
                                    OPT is a tuning hint and is independent of calib batch size.
+        :param local: Use local model file instead of downloading from model zoo.
         """
         flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         self.network = self.builder.create_network(flags)
         self.parser = trt.OnnxParser(self.network, self.trt_logger)
-        if(not local):
+        
+        if not local:
             onnx_path = download_model(onnx_model_id, "models")
         else:
             onnx_path = Path(onnx_model_id)
+            
         with open(onnx_path, "rb") as f:
             if not self.parser.parse(f.read()):
                 print(f"[ERROR] Failed to parse ONNX: {onnx_path}")
@@ -164,10 +191,9 @@ class EngineBuilder:
                     opt_shape = (b_opt, 256, 256, 1)
                     max_shape = (b_max, 256, 256, 1)
                 else:
-                    # dyanamic fallback if params not spcifieid, default to 1,8,32
-                    min_shape = (1, 256, 256, 1)
-                    opt_shape = (8, 256, 256, 1)
-                    max_shape = (32, 256, 256, 1)
+                    # Static fallback within a dynamic profile
+                    min_shape = opt_shape = max_shape = (batch_size, 256, 256, 1)
+
                 profile.set_shape(inp.name, min_shape, opt_shape, max_shape)
                 print(f"  Profile: MIN={min_shape}  OPT={opt_shape}  MAX={max_shape}")
 
@@ -185,14 +211,14 @@ class EngineBuilder:
         input_name,
         calib_input=None,
         calib_cache=None,
-        calib_num_images=None,
-        calib_batch_size=None,
+        calib_num_images=500,
+        calib_batch_size=8,
     ):
         """
-        Build and serialize the TensorRT engine in precisions : FP32, FP16, INT8, FP8 , FP4
+        Build and serialize the TensorRT engine.
 
         :param input_name: Name of the engine.
-        :param calib_input: Directory containing H5 files for calibration.
+        :param calib_input: Directory containing H5 files for calibration (INT8 only).
         :param calib_cache: Path to read/write the INT8 calibration cache.
         :param calib_num_images: Max number of H5 files to use for calibration.
         :param calib_batch_size: Samples per calibration forward pass.
@@ -203,25 +229,16 @@ class EngineBuilder:
         engine_path = Path("engines") / engine_name
         engine_path.parent.mkdir(parents=True, exist_ok=True)
         precision = self.precision
-        if precision == "int8":  
+
+        # --- Set precision flags ---
+        if precision == "int8":
             if self.builder.platform_has_fast_int8:
+                print("[INFO] INT8 fast mode supported on this device.")
+            else:
                 print("[WARNING] INT8 is not natively supported on this device — may fall back to FP32.")
             self.config.set_flag(trt.BuilderFlag.INT8)
-        elif precision == "fp16": 
-            if self.builder.platform_has_fast_fp16:
-                print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
-            self.config.set_flag(trt.BuilderFlag.FP16)
-        elif precision == "fp8": 
-            if self.builder.platform_has_fast_fp8:
-                print("[WARNING] FP8 is not natively supported on this device — may fall back to FP32.")
-            self.config.set_flag(trt.BuilderFlag.FP8)
-        elif precision =="fp4": 
-            if self.builder.platform_has_fast_fp4:
-                print("[WARNING] FP4 is not natively supported on this device — may fall back to FP32.")
-            self.config.set_flag(trt.BuilderFlag.FP4)
-
-        # --- Set up calibrator ---
-        if precision == "int8":
+            
+            # INT8 requires calibration
             if calib_cache is not None and os.path.exists(calib_cache):
                 print(f"[INFO] Existing calibration cache found at {calib_cache} — skipping H5 calibration.")
                 h5_files = []
@@ -236,7 +253,41 @@ class EngineBuilder:
                 h5_files = h5_files[:calib_num_images]
                 print(f"[INFO] Using {len(h5_files)} H5 files for INT8 calibration (batch_size={calib_batch_size}).")
 
-            self.config.int8_calibrator = EngineCalibrator(cache_file=calib_cache,h5_files=h5_files,calib_batch_size=calib_batch_size)       
+            self.config.int8_calibrator = EngineCalibrator(
+                cache_file=calib_cache,
+                h5_files=h5_files,
+                calib_batch_size=calib_batch_size,
+                dm_time_only=self.dm_time_only
+            )
+            
+        elif precision == "fp16":
+            if self.builder.platform_has_fast_fp16:
+                print("[INFO] FP16 fast mode supported on this device.")
+            else:
+                print("[WARNING] FP16 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP16)
+            # No calibration needed - weights are directly converted to FP16
+            
+        elif precision == "fp8":
+            if self.builder.platform_has_fast_fp8:
+                print("[INFO] FP8 fast mode supported on this device.")
+            else:
+                print("[WARNING] FP8 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP8)
+            # No calibration needed - model must be exported with FP8 quantization
+            
+        elif precision == "fp4":
+            if self.builder.platform_has_fast_fp4:
+                print("[INFO] FP4 fast mode supported on this device.")
+            else:
+                print("[WARNING] FP4 is not natively supported on this device — may fall back to FP32.")
+            self.config.set_flag(trt.BuilderFlag.FP4)
+            # No calibration needed - model must be exported with FP4 quantization
+            
+        elif precision == "fp32":
+            print("[INFO] Building FP32 engine (default precision).")
+            # No flags needed - FP32 is the default
+
         # --- Build ---
         print(f"[INFO] Building {precision.upper()} engine -> {engine_path}")
         engine_bytes = self.builder.build_serialized_network(self.network, self.config)
@@ -254,20 +305,38 @@ class EngineBuilder:
 # ---------------------------------------------------------------------------
 
 def main(args):
-    builder = EngineBuilder(verbose=args.verbose, workspace=args.workspace,precision = args.precision,dm_time_only=args.dm_time_only)
-    builder.create_network(onnx_model_id=args.onnx,dynamic_batch_size=args.dynamic_batch_size,local=args.local)
-    builder.create_engine(input_name=args.engine,calib_input=args.calib_input,calib_cache=args.calib_cache,calib_num_images=args.calib_num_images,calib_batch_size=args.calib_batch_size)
+    builder = EngineBuilder(
+        verbose=args.verbose, 
+        workspace=args.workspace,
+        dm_time_only=args.dm_time_only,
+        precision=args.precision
+    )
+    builder.create_network(
+        onnx_model_id=args.onnx,
+        batch_size=args.batch_size,
+        dynamic_batch_size=args.dynamic_batch_size,
+        local=args.local
+    )
+    builder.create_engine(
+        input_name=args.engine,
+        calib_input=args.calib_input,
+        calib_cache=args.calib_cache,
+        calib_num_images=args.calib_num_images,
+        calib_batch_size=args.calib_batch_size,
+    )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Build a TensorRT INT8 engine for FETCH FRB detection."
+        description="Build a TensorRT engine for FETCH FRB detection."
     )
     parser.add_argument("-o", "--onnx", required=True,
                         help="INDEX of input ONNX model")
     parser.add_argument("-e", "--engine", required=True,
                         help="Output name for the TRT engine")
-    parser.add_argument("-d", "--dynamic_batch_size", default=[1, 8, 32], type=str,
+    parser.add_argument("-b", "--batch_size", default=1, type=int,
+                        help="Static batch size (ignored if --dynamic_batch_size set), default: 1")
+    parser.add_argument("-d", "--dynamic_batch_size", default=None,
                         help="Dynamic batch size as MIN,OPT,MAX e.g. 1,8,32. "
                              "OPT is a tuning hint and is independent of calib_batch_size.")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -282,11 +351,12 @@ if __name__ == "__main__":
                         help="Max H5 files to use for calibration, default: 500")
     parser.add_argument("--calib_batch_size", default=8, type=int,
                         help="Batch size per calibration pass, default: 8")
-    parser.add_argument("--precision", default="fp32", choices=["fp4","fp8", "int8", "fp16", "fp32"],
-                        help="Precision mode to build in, default: fp32")
-    parser.add_argument("-D","--dm_time_only",default=False,type=bool,help="Only use DM-Time data for inference")
-
-    parser.add_argument("--local", default=False,type=bool, help="Use local(custom) models instead of downloading from the model zoo")
+    parser.add_argument("--precision", default="int8", choices=["int8", "fp16", "fp32", "fp8", "fp4"],
+                        help="Precision mode to build in, default: int8")
+    parser.add_argument("-D", "--dm_time_only", action="store_true",
+                        help="Only use DM-Time data for inference (calibration only uses DT input)")
+    parser.add_argument("--local", action="store_true",
+                        help="Use local(custom) models instead of downloading from the model zoo")
 
     args = parser.parse_args()
 
