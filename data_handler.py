@@ -64,35 +64,42 @@ def preprocess_dt_data(data):
     return data
 
 
-def load_and_preprocess_h5_data(h5_file_path, ft_dim=(256, 256), dt_dim=(256, 256)):
+def load_and_preprocess_h5_data(h5_file_path, ft_dim=(256, 256), dt_dim=(256, 256), dm_time_only=False):
     """
     Load and preprocess data from H5 file.
 
     :param h5_file_path: Path to H5 file
     :param ft_dim: Expected FT data dimensions
     :param dt_dim: Expected DT data dimensions
+    :param dm_time_only: If True, only load and preprocess DT data, return None for FT data
     :return: Tuple of (ft_data, dt_data) with shape (H, W, 1)
     """
     try:
         with h5py.File(h5_file_path, "r") as f:
             # Load raw data
-            data_ft_raw = np.array(f["data_freq_time"], dtype=np.float32).T
+            if not dm_time_only:
+                data_ft_raw = np.array(f["data_freq_time"], dtype=np.float32).T
             data_dt_raw = np.array(f["data_dm_time"], dtype=np.float32)
 
             # Apply preprocessing
-            data_ft = preprocess_ft_data(data_ft_raw)
+            if not dm_time_only:
+                data_ft = preprocess_ft_data(data_ft_raw)
             data_dt = preprocess_dt_data(data_dt_raw)
 
             # Reshape to expected dimensions with channel dimension
-            ft_data = np.reshape(data_ft, (*ft_dim, 1))
+            if not dm_time_only:
+                ft_data = np.reshape(data_ft, (*ft_dim, 1))
             dt_data = np.reshape(data_dt, (*dt_dim, 1))
 
-            return ft_data, dt_data
+            if not dm_time_only:
+                return ft_data, dt_data
+            else:
+                return None, dt_data
 
     except Exception as e:
         logger.error(f"Failed to load/preprocess {h5_file_path}: {str(e)}")
         raise
-def h5_batch_generator(h5_files, batch_size=8):
+def h5_batch_generator(h5_files, batch_size=8, dm_time_only=False):
     """
     Yields (ft_batch, dt_batch, file_paths) for each batch of H5 files.
     ft_batch and dt_batch have shape (N, 256, 256, 1).
@@ -104,8 +111,11 @@ def h5_batch_generator(h5_files, batch_size=8):
 
         for path in batch_files:
             try:
-                ft, dt = load_and_preprocess_h5_data(path,(256, 256),(256, 256))
-                ft_list.append(ft)
+                if not dm_time_only:
+                    ft, dt = load_and_preprocess_h5_data(path, (256, 256), (256, 256), dm_time_only)
+                    ft_list.append(ft)
+                else:
+                    dt = load_and_preprocess_h5_data(path,(256, 256),(256, 256), dm_time_only)
                 dt_list.append(dt)
                 valid.append(path)
             except Exception as e:
@@ -203,7 +213,7 @@ def find_dm_of_file(file_path):
     except Exception as e:
         logger.error(f"Failed to extract DM from {file_path}: {str(e)}")
         raise
-def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
+def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256), dm_time_only=False):
     """
     Process a batch of H5 files and return preprocessed data.
 
@@ -211,6 +221,7 @@ def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
     :param batch_size: Batch size for processing
     :param ft_dim: FT data dimensions
     :param dt_dim: DT data dimensions
+    :param dm_time_only: If True, only load and preprocess DT data, return None for FT data
     :return: Generator yielding (ft_batch, dt_batch, file_paths_batch)
     """
     for i in range(0, len(h5_files), batch_size):
@@ -222,8 +233,11 @@ def process_batch(h5_files, batch_size=8, ft_dim=(256, 256), dt_dim=(256, 256)):
 
         for h5_file in batch_files:
             try:
-                ft_data, dt_data = load_and_preprocess_h5_data(h5_file, ft_dim, dt_dim)
-                ft_batch.append(ft_data)
+                if not dm_time_only:
+                    ft_data,dt_data = load_and_preprocess_h5_data(h5_file, ft_dim, dt_dim, dm_time_only)
+                    ft_batch.append(ft_data)
+                else:
+                    dt_data = load_and_preprocess_h5_data(h5_file, ft_dim, dt_dim, dm_time_only)
                 dt_batch.append(dt_data)
                 valid_files.append(h5_file)
             except Exception as e:
