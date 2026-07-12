@@ -208,7 +208,7 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,batch_size: in
 
     print(f"Found {len(h5_files)} H5 files in {h5_folder}")
     print(f"Loading engine from {engine_path}")
-
+    start_time = time()
     inferrer = TensorRTInfer(engine_path,dm_time_only=dm_time_only)
     all_results = {}
 
@@ -225,7 +225,9 @@ def run_inference_on_h5_folder(engine_path: Path, h5_folder: Path,batch_size: in
             all_results[Path(h5_file).name] = {
                 key: val[idx] for key, val in outputs.items()
             }
-
+    end_time = time()
+    latency = end_time - start_time
+    print(f"Inference complete — {len(all_results)} candidates processed in inference latency:{latency:.4f} seconds")
     return all_results
 def run_timed_inference_on_h5_folder(engine_path: Path, h5_folder: Path,DM_value: float, batch_size: int = 8, ft_dim: tuple = (256, 256), dt_dim: tuple = (256, 256), repetitions: int = 10, timing_result_path: str = "timing_results.csv",dm_time_only =False):
     """Run inference multiple times to measure latency and save results to CSV
